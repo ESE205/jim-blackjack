@@ -147,4 +147,78 @@ app.get('/game/:gameName/getOrCreate', async (req, res) => {
 
 
 
+// respond to requests to draw cards
+app.get('/game/:deckId/draw/:player', async (req, res) => {
+    // draw the card
+    await drawCardToHand(req.params.deckId, req.params.player);
 
+    // return the appropriate player's pile data
+    res.json(await getPileData(req.params.deckId, req.params.player));
+});
+
+// respond to the end of a game
+app.get('/game/:gameName/endGame/:winner', async (req, res) => {
+
+    // make api request for a new deck id
+    const newDeckData = (await axios.get(`${config.apiEndpoint}/new/shuffle/?deck_count=1`)).data;
+    const deckId = newDeckData.deck_id;
+    
+    let qString;
+    // generate query to update relevant row in DB with a new deckId and update games won/lost
+    if (req.params.winner == 'player') {
+        qString = 'UPDATE games SET deckId = ?, gamesWon = gamesWon + 1 WHERE gameName = ?';
+    } else {
+        qString = 'UPDATE games SET deckId = ?, gamesLost = gamesLost + 1 WHERE gameName = ?';
+    }
+    // update row, then get players new cards
+    await query(qString, [deckId, req.params.gameName]);
+    await drawCardToHand(deckId, 'player');
+    await drawCardToHand(deckId, 'dealer');
+    await drawCardToHand(deckId, 'player');
+    await drawCardToHand(deckId, 'dealer');
+
+    // get player piles
+    const playerPileData = await getPileData(deckId, 'player');
+    const dealerPileData = await getPileData(deckId, 'dealer');
+
+    // get game data from DB
+    qString = 'SELECT gameName, deckId, gamesWon, gamesLost FROM games WHERE gameName = ?';
+    const response = await query(qString, [req.params.gameName]);
+
+    // return game data to client
+    res.json({
+        gameName: req.params.gameName,
+        deckId: deckId,
+        gamesWon: response[0].gamesWon,
+        gamesLost: response[0].gamesLost,
+        dealerPile: dealerPileData,
+        playerPile: playerPileData,
+        scores: {}
+    });
+});
+
+
+
+
+
+// make api call to draw a card to a specific hand
+// note- hand should either be 'dealer' or 'player'
+async function drawCardToHand(deckId, hand) {
+    // draw card from deck
+    const drawResponse = (await axios.get(`${config.apiEndpoint}/${deckId}/draw/?count=1`)).data;
+
+    // place card in appropriate hand
+    await axios.get(`${config.apiEndpoint}/${deckId}/pile/${hand}/add/?cards=${drawResponse.cards[0].code}`);
+    return;
+}
+
+// make api call to get specified hand data
+async function getPileData(deckId, hand) {
+    const res = (await axios.get(`${config.apiEndpoint}/${deckId}/pile/${hand}/list`)).data;
+    return res.piles[hand];
+}
+
+// run our express server
+app.listen(config.PORT, () => {
+    console.log(`Server running on port ${config.PORT}`);
+});
